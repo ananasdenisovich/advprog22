@@ -41,10 +41,19 @@
     <br>
     <br>
     <h1>Manage Users - Online Furniture Shop</h1>
+    <div id="chatList"></div>
+    <div id="chatWindow" n>
+        <h2>Chat Room</h2>
+        <div id="messages"></div>
+        <input type="text" id="messageInput" placeholder="Type a message">
+        <button onclick="sendMessage()">Send</button>
+    </div>
 
     <div id="userList"></div>
 
     <script>
+        let ws;
+
         function getUsers() {
             fetch('http://localhost:8080/getAllUsers')
                 .then(response => {
@@ -170,7 +179,60 @@
                 });
         }
 
+        function getChats() {
+            fetch('http://localhost:8080/getAllChats')
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error(`HTTP error! Status: ${response.status}`);
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    const chatList = document.getElementById("chatList");
+                    chatList.innerHTML = '<strong>Chat List:</strong><br>';
+                    data.forEach(chat => {
+                        chatList.innerHTML += `<div>Chat ID: ${chat._id}, Client ID: ${chat.clientId}, Open: ${chat.open} 
+                            <button onclick="joinChat('${chat._id}')">Join</button>
+                        </div>`;
+                    });
+                })
+                .catch((error) => {
+                    console.error("Error:", error);
+                });
+        }
+
+        function joinChat(chatID) {
+            document.getElementById("chatWindow").style.display = "block";
+            ws = new WebSocket(`ws://localhost:8080/ws/${chatID}`);
+
+            ws.onmessage = function(event) {
+                const messagesDiv = document.getElementById("messages");
+                const msg = JSON.parse(event.data);
+                messagesDiv.innerHTML += `<div>${msg.sender}: ${msg.content} (${new Date(msg.timestamp).toLocaleTimeString()})</div>`;
+            };
+
+            ws.onclose = function(event) {
+                console.log('WebSocket closed:', event);
+                document.getElementById("chatWindow").style.display = "none";
+            };
+        }
+
+        function sendMessage() {
+            const messageInput = document.getElementById("messageInput");
+            const message = messageInput.value;
+            if (message && ws) {
+                const msg = {
+                    sender: 'admin',
+                    content: message,
+                    timestamp: new Date(),
+                };
+                ws.send(JSON.stringify(msg));
+                messageInput.value = '';
+            }
+        }
+
         getUsers();
+        getChats();
     </script>
     <script async src="https://cdn.jsdelivr.net/npm/es-module-shims@1/dist/es-module-shims.min.js"
         crossorigin="anonymous"></script>

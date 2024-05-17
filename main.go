@@ -88,7 +88,6 @@ type Chat struct {
 	ClosedAt  time.Time `json:"closedAt,omitempty" bson:"closedAt,omitempty"`
 }
 
-// Message struct for chat messages
 type Message struct {
 	Sender    string    `json:"sender" bson:"sender"`
 	Content   string    `json:"content" bson:"content"`
@@ -99,7 +98,7 @@ type ChatRoom struct {
 	Clients    map[*websocket.Conn]bool
 	Register   chan *websocket.Conn
 	Broadcast  chan []byte
-	Collection *mongo.Collection // MongoDB collection
+	Collection *mongo.Collection
 }
 
 var (
@@ -140,7 +139,6 @@ func init() {
 
 	database = client.Database(databaseName)
 }
-
 func AuthMiddleware(requiredRole ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString := c.GetHeader("Authorization")
@@ -218,19 +216,17 @@ func GenerateJWTToken(userID string, role string) (string, error) {
 
 	return signedToken, nil
 }
-func createChat(userID string) {
-	chatID := generateChatID()
+func createChat(userID string) string {
+	chatID := uuid.New().String()
 
-	// Save chat to MongoDB
 	chat := Chat{
 		ID:        chatID,
-		ClientID:  userID, // Assuming userID is the client's ID
+		ClientID:  userID,
 		Messages:  []Message{},
 		Open:      true,
 		CreatedAt: time.Now(),
 	}
 
-	// Insert chat into MongoDB
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -238,19 +234,14 @@ func createChat(userID string) {
 	_, err := collection.InsertOne(ctx, chat)
 	if err != nil {
 		log.Println("Error inserting chat into MongoDB:", err)
-		return
+		return ""
 	}
 
-	// Send new chat notification via email
-	err = sendNewChatNotification()
-	if err != nil {
-		log.Println("Error sending new chat notification:", err)
-	}
+	return chatID
 }
 func generateChatID() string {
 	return uuid.New().String()
 }
-
 func handleWebSocket(c *gin.Context) {
 	roomID := c.Param("roomID")
 	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
@@ -271,33 +262,69 @@ func handleWebSocket(c *gin.Context) {
 }
 
 func (room *ChatRoom) HandleMessages(client *websocket.Conn) {
+	defer func() {
+		room.Leave(client)
+		client.Close()
+	}()
+
 	for {
 		_, message, err := client.ReadMessage()
 		if err != nil {
-			room.Leave(client)
+			log.Println("WebSocket read error:", err)
 			break
 		}
-		room.Broadcast <- message
 
-		// Example: Save chat data to MongoDB
-		err = room.SaveChat(room.ID, "user123")
-		if err != nil {
-			log.Println("Error saving chat:", err)
+		var msg Message
+		if err := json.Unmarshal(message, &msg); err != nil {
+			log.Println("Error parsing message:", err)
+			continue
+		}
+
+		switch msg.Content {
+		case "accept":
+			updateChatStatus(room.ID, true)
+		case "decline":
+			updateChatStatus(room.ID, false)
+		default:
+			room.Broadcast <- message
 		}
 	}
 }
+func (room *ChatRoom) AcceptChat(client *websocket.Conn) {
+	chatID := "your_chat_id_here"
+
+	err := updateChatStatus(chatID, true)
+	if err != nil {
+		log.Println("Error updating chat status:", err)
+		return
+	}
+
+}
+func updateChatStatus(chatID string, open bool) error {
+	ctx := context.Background()
+	collection := database.Collection("chatrooms")
+
+	filter := bson.M{"_id": chatID}
+	update := bson.M{"$set": bson.M{"open": open}}
+
+	_, err := collection.UpdateOne(ctx, filter, update)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func GetOrCreateChatRoom(roomID string) *ChatRoom {
 	if room, exists := chatRooms[roomID]; exists {
 		return room
 	}
 
-	collection := client.Database("furnitureShopDB").Collection("chatrooms")
 	room := &ChatRoom{
-		ID:         roomID,
-		Clients:    make(map[*websocket.Conn]bool),
-		Register:   make(chan *websocket.Conn),
-		Broadcast:  make(chan []byte),
-		Collection: collection,
+		ID:        roomID,
+		Clients:   make(map[*websocket.Conn]bool),
+		Register:  make(chan *websocket.Conn),
+		Broadcast: make(chan []byte),
 	}
 	chatRooms[roomID] = room
 
@@ -321,14 +348,7 @@ func (room *ChatRoom) Run() {
 		}
 	}
 }
-func (room *ChatRoom) SaveChat(chatID string, userID string) error {
-	ctx := context.Background()
-	_, err := room.Collection.InsertOne(ctx, bson.M{"chatID": chatID, "userID": userID})
-	if err != nil {
-		return err
-	}
-	return nil
-}
+
 func (room *ChatRoom) Join(client *websocket.Conn) {
 	room.Register <- client
 }
@@ -337,6 +357,15 @@ func (room *ChatRoom) Leave(client *websocket.Conn) {
 	delete(room.Clients, client)
 	client.Close()
 }
+func (room *ChatRoom) SaveChat(chatID string, userID string) error {
+	ctx := context.Background()
+	_, err := room.Collection.InsertOne(ctx, bson.M{"chatID": chatID, "userID": userID})
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func sendNewChatNotification() error {
 	email := gomail.NewMessage()
 	email.SetHeader("From", smtpEmail)
@@ -344,10 +373,8 @@ func sendNewChatNotification() error {
 	email.SetHeader("Subject", "New Chat Created")
 	email.SetBody("text/plain", "A new chat has been created. Please check the admin panel.")
 
-	// Set up SMTP server credentials
 	dialer := gomail.NewDialer(smtpHost, smtpPort, smtpEmail, smtpPassword)
 
-	// Send email
 	if err := dialer.DialAndSend(email); err != nil {
 		log.Println("Email sending error:", err)
 		return err
