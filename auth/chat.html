@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+        .chat-container {
+            width: 500px;
+            max-width: 100%;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        .messages {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+        .message {
+            margin-bottom: 10px;
+        }
+        .message.client {
+            text-align: right;
+        }
+        .message.support {
+            text-align: left;
+        }
+        .message span {
+            display: inline-block;
+            padding: 8px 12px;
+            border-radius: 20px;
+        }
+        .message.client span {
+            background-color: #dcf8c6;
+        }
+        .message.support span {
+            background-color: #eee;
+        }
+        .input-group {
+            display: flex;
+        }
+        .input-group input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px 0 0 4px;
+        }
+        .input-group button {
+            padding: 10px 20px;
+            border: none;
+            background-color: #007bff;
+            color: #fff;
+            cursor: pointer;
+            border-radius: 0 4px 4px 0;
+        }
+        .input-group button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+<div class="chat-container">
+    <div class="messages" id="messages"></div>
+    <div class="input-group">
+        <input type="text" id="messageInput" placeholder="Type a message...">
+        <button onclick="sendMessage()">Send</button>
+    </div>
+</div>
+<script>
+    const messagesDiv = document.getElementById('messages');
+    const messageInput = document.getElementById('messageInput');
+    const ws = new WebSocket('ws://' + window.location.host + '/ws');
+
+    ws.onmessage = function(event) {
+        const message = JSON.parse(event.data);
+        displayMessage(message.text, message.sender);
+    };
+
+    function sendMessage() {
+        const messageText = messageInput.value;
+        if (messageText === '') {
+            return;
+        }
+        const message = {
+            text: messageText,
+            sender: 'client'
+        };
+        ws.send(JSON.stringify(message));
+        displayMessage(messageText, 'client');
+        messageInput.value = '';
+    }
+
+    function displayMessage(text, sender) {
+        const messageDiv = document.createElement('div');
+        messageDiv.classList.add('message');
+        messageDiv.classList.add(sender);
+        const messageSpan = document.createElement('span');
+        messageSpan.textContent = text;
+        messageDiv.appendChild(messageSpan);
+        messagesDiv.appendChild(messageDiv);
+        messagesDiv.scrollTop = messagesDiv.scrollHeight;
+    }
+</script>
+</body>
+</html>
