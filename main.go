@@ -11,8 +11,11 @@ import (
 	"net/http"
 	"net/smtp"
 	"os"
+
 	"strconv"
 	"time"
+
+	"shop/chat"
 
 	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-contrib/cors"
@@ -30,7 +33,7 @@ import (
 )
 
 const (
-	mongoURI        = "mongodb+srv://ananasovich2002:87787276658Aa.@cluster0.80wl48q.mongodb.net/"
+	mongoURI        = "mongodb+srv://assima_myrz:Ny3JCiBmeVO7TkRv@cluster.eccvy8x.mongodb.net/"
 	databaseName    = "furnitureShopDB"
 	collectionName  = "users"
 	collectionName2 = "furniture"
@@ -78,33 +81,50 @@ type User struct {
 	NewPassword  string             `json:"NewPassword"`
 }
 type Chat struct {
-	ID        string    `json:"id" bson:"_id"`
-	ClientID  string    `json:"clientId" bson:"clientId"`
-	SupportID string    `json:"supportId" bson:"supportId"`
-	RoomID    string    `json:"roomId" bson:"roomId"`
-	Messages  []Message `json:"messages" bson:"messages"`
-	Open      bool      `json:"open" bson:"open"`
+	ID string `json:"id" bson:"_id"`
+
+	ClientID string `json:"clientId" bson:"clientId"`
+
+	SupportID string `json:"supportId" bson:"supportId"`
+
+	RoomID string `json:"roomId" bson:"roomId"`
+
+	Messages []Message `json:"messages" bson:"messages"`
+
+	Open bool `json:"open" bson:"open"`
+
 	CreatedAt time.Time `json:"createdAt" bson:"createdAt"`
-	ClosedAt  time.Time `json:"closedAt,omitempty" bson:"closedAt,omitempty"`
+
+	ClosedAt time.Time `json:"closedAt,omitempty" bson:"closedAt,omitempty"`
 }
 
 type Message struct {
-	Sender    string    `json:"sender" bson:"sender"`
-	Content   string    `json:"content" bson:"content"`
+	Sender string `json:"sender" bson:"sender"`
+
+	Content string `json:"content" bson:"content"`
+
 	Timestamp time.Time `json:"timestamp" bson:"timestamp"`
 }
+
 type ChatRoom struct {
-	ID         string
-	Clients    map[*websocket.Conn]bool
-	Register   chan *websocket.Conn
-	Broadcast  chan []byte
+	ID string
+
+	Clients map[*websocket.Conn]bool
+
+	Register chan *websocket.Conn
+
+	Broadcast chan []byte
+
 	Collection *mongo.Collection
 }
 
 var (
 	chatRooms = make(map[string]*ChatRoom)
-	upgrader  = websocket.Upgrader{
-		ReadBufferSize:  1024,
+
+	upgrader = websocket.Upgrader{
+
+		ReadBufferSize: 1024,
+
 		WriteBufferSize: 1024,
 	}
 )
@@ -139,6 +159,7 @@ func init() {
 
 	database = client.Database(databaseName)
 }
+
 func AuthMiddleware(requiredRole ...string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		tokenString := c.GetHeader("Authorization")
@@ -216,382 +237,7 @@ func GenerateJWTToken(userID string, role string) (string, error) {
 
 	return signedToken, nil
 }
-func createChat(userID string) string {
-	chatID := uuid.New().String()
 
-	chat := Chat{
-		ID:        chatID,
-		ClientID:  userID,
-		Messages:  []Message{},
-		Open:      true,
-		CreatedAt: time.Now(),
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	collection := database.Collection("chatrooms")
-	_, err := collection.InsertOne(ctx, chat)
-	if err != nil {
-		log.Println("Error inserting chat into MongoDB:", err)
-		return ""
-	}
-
-	return chatID
-}
-func generateChatID() string {
-	return uuid.New().String()
-}
-func handleWebSocket(c *gin.Context) {
-	roomID := c.Param("roomID")
-	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
-	if err != nil {
-		log.Println("WebSocket upgrade error:", err)
-		return
-	}
-
-	chatRoom := GetOrCreateChatRoom(roomID)
-	chatRoom.Join(ws)
-
-	defer func() {
-		chatRoom.Leave(ws)
-		ws.Close()
-	}()
-
-	chatRoom.HandleMessages(ws)
-}
-
-func (room *ChatRoom) HandleMessages(client *websocket.Conn) {
-	defer func() {
-		room.Leave(client)
-		client.Close()
-	}()
-
-	for {
-		_, message, err := client.ReadMessage()
-		if err != nil {
-			log.Println("WebSocket read error:", err)
-			break
-		}
-
-		var msg Message
-		if err := json.Unmarshal(message, &msg); err != nil {
-			log.Println("Error parsing message:", err)
-			continue
-		}
-
-		switch msg.Content {
-		case "accept":
-			updateChatStatus(room.ID, true)
-		case "decline":
-			updateChatStatus(room.ID, false)
-		default:
-			room.Broadcast <- message
-		}
-	}
-}
-func (room *ChatRoom) AcceptChat(client *websocket.Conn) {
-	chatID := "your_chat_id_here"
-
-	err := updateChatStatus(chatID, true)
-	if err != nil {
-		log.Println("Error updating chat status:", err)
-		return
-	}
-
-}
-func updateChatStatus(chatID string, open bool) error {
-	ctx := context.Background()
-	collection := database.Collection("chatrooms")
-
-	filter := bson.M{"_id": chatID}
-	update := bson.M{"$set": bson.M{"open": open}}
-
-	_, err := collection.UpdateOne(ctx, filter, update)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func GetOrCreateChatRoom(roomID string) *ChatRoom {
-	if room, exists := chatRooms[roomID]; exists {
-		return room
-	}
-
-	room := &ChatRoom{
-		ID:        roomID,
-		Clients:   make(map[*websocket.Conn]bool),
-		Register:  make(chan *websocket.Conn),
-		Broadcast: make(chan []byte),
-	}
-	chatRooms[roomID] = room
-
-	go room.Run()
-	return room
-}
-
-func (room *ChatRoom) Run() {
-	for {
-		select {
-		case client := <-room.Register:
-			room.Clients[client] = true
-		case message := <-room.Broadcast:
-			for client := range room.Clients {
-				err := client.WriteMessage(websocket.TextMessage, message)
-				if err != nil {
-					delete(room.Clients, client)
-					client.Close()
-				}
-			}
-		}
-	}
-}
-
-func (room *ChatRoom) Join(client *websocket.Conn) {
-	room.Register <- client
-}
-
-func (room *ChatRoom) Leave(client *websocket.Conn) {
-	delete(room.Clients, client)
-	client.Close()
-}
-func (room *ChatRoom) SaveChat(chatID string, userID string) error {
-	ctx := context.Background()
-	_, err := room.Collection.InsertOne(ctx, bson.M{"chatID": chatID, "userID": userID})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func sendNewChatNotification() error {
-	email := gomail.NewMessage()
-	email.SetHeader("From", smtpEmail)
-	email.SetHeader("To", "ananasovich2002@gmail.com")
-	email.SetHeader("Subject", "New Chat Created")
-	email.SetBody("text/plain", "A new chat has been created. Please check the admin panel.")
-
-	dialer := gomail.NewDialer(smtpHost, smtpPort, smtpEmail, smtpPassword)
-
-	if err := dialer.DialAndSend(email); err != nil {
-		log.Println("Email sending error:", err)
-		return err
-	}
-
-	log.Println("New chat notification sent successfully")
-	return nil
-}
-
-func main() {
-
-	logger := logrus.New()
-
-	r := gin.Default()
-
-	config := cors.Config{
-		AllowOrigins:     []string{"*"},
-		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
-		AllowHeaders:     []string{"Origin", "Content-Type"},
-		ExposeHeaders:    []string{"Content-Length"},
-		AllowCredentials: true,
-		MaxAge:           12 * time.Hour,
-	}
-
-	config.AllowOrigins = []string{"http://localhost:8080"}
-	r.Use(cors.New(config))
-	logger.SetFormatter(&logrus.JSONFormatter{})
-	logger.SetOutput(os.Stdout)
-
-	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
-		Output: logger.Out,
-		Formatter: func(params gin.LogFormatterParams) string {
-			return fmt.Sprintf("{\"timestamp\":\"%s\",\"status\":%d,\"method\":\"%s\",\"path\":\"%s\"}\n",
-				params.TimeStamp.Format(time.RFC3339),
-				params.StatusCode,
-				params.Method,
-				params.Path,
-			)
-		},
-	}))
-
-	r.MaxMultipartMemory = 1024
-	r.Use(rateLimiter(limiter))
-	r.LoadHTMLGlob("templates/*")
-	r.GET("/2", func(c *gin.Context) {
-		c.String(http.StatusOK, "Request processed successfully")
-	})
-
-	r.POST("/logUserAction", logUserActionEndpoint)
-	r.POST("/register", registerUser)
-	r.POST("/login", loginUser)
-	r.GET("/furniture", getFurnitures)
-	r.GET("/filter", filterProductsHandler)
-	r.GET("/getUser", getUserByID)
-	r.POST("/submitOrder", submitOrder)
-	r.PUT("/updateUser", updateUser)
-	r.DELETE("/deleteUser", deleteUser)
-	r.GET("/getAllUsers", getAllUsers)
-	r.GET("/protected-route", AuthMiddleware(), AuthorizedHandler)
-	r.GET("/confirm-user", confirmUser)
-	r.GET("/users", AuthMiddleware("admin"), getUsersHandler)
-	r.GET("/profile", AuthMiddleware("user"), userProfileHandler)
-	r.POST("/update", AuthMiddleware("user"), updateUserHandler)
-	r.GET("/ws/:roomID", handleWebSocket)
-
-	r.Static("/static", "./static/")
-	r.StaticFS("/auth", http.Dir("auth"))
-	r.StaticFile("/", "index.html")
-
-	client, err := mongo.NewClient(options.Client().ApplyURI(mongoURI))
-	if err != nil {
-		logger.WithError(err).Fatal("Error creating MongoDB client")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	err = client.Connect(ctx)
-	if err != nil {
-		logger.WithError(err).Fatal("Error connecting to MongoDB")
-		return
-	}
-
-	err = client.Ping(ctx, nil)
-	if err != nil {
-		logger.WithError(err).Fatal("Error pinging MongoDB")
-		return
-	}
-
-	logger.Info("Connected to MongoDB successfully!")
-
-	defer client.Disconnect(ctx)
-
-	database := client.Database(databaseName)
-
-	if err := createUsersCollection(); err != nil {
-		logger.WithError(err).Fatal("Error creating users collection")
-		return
-	}
-
-	if err := addAgeField(); err != nil {
-		logger.WithError(err).Fatal("Error adding age field")
-		return
-	}
-	exampleUser := User{
-		Name:  "John Doe",
-		Email: "john.doe@example.com",
-	}
-
-	usersCollection := database.Collection(collectionName)
-	insertResult, err := usersCollection.InsertOne(ctx, exampleUser)
-	if err != nil {
-		logger.WithError(err).Fatal("Error inserting user")
-		return
-	}
-
-	logger.Info("Inserted user with ID:", insertResult.InsertedID)
-	logger.Info("Server is running on :8080...")
-
-	if err := r.Run(":8080"); err != nil {
-		logger.WithError(err).Fatal("Error starting the server")
-	}
-}
-
-// CRUD
-func createUser(w http.ResponseWriter, r *http.Request) {
-	var newUser User
-	err := json.NewDecoder(r.Body).Decode(&newUser)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	usersCollection := database.Collection(collectionName)
-	insertResult, err := usersCollection.InsertOne(context.Background(), newUser)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	json.NewEncoder(w).Encode(insertResult)
-}
-
-// crud
-func getUserByID(c *gin.Context) {
-	userID := c.Query("id")
-	objID, err := primitive.ObjectIDFromHex(userID)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
-		return
-	}
-
-	var user User
-	usersCollection := database.Collection(collectionName)
-	err = usersCollection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&user)
-	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	c.JSON(http.StatusOK, user)
-}
-
-func loginUser(c *gin.Context) {
-	var loginRequest struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
-	}
-
-	if err := c.ShouldBindJSON(&loginRequest); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	usersCollection := client.Database(databaseName).Collection(collectionName)
-	var user User
-	err := usersCollection.FindOne(context.TODO(), bson.M{"email": loginRequest.Email}).Decode(&user)
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-		return
-	}
-
-	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(loginRequest.Password))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
-		return
-	}
-
-	isAdmin := (user.Email == "admin@example.com" && user.Password == "adminpassword")
-
-	if isAdmin {
-		user.Roles = []string{"admin"}
-	}
-
-	token, err := GenerateJWTToken(user.ID.Hex(), user.Roles[0])
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating JWT token"})
-		return
-	}
-	fmt.Println("Generated Token:", token)
-
-	c.JSON(http.StatusOK, gin.H{"message": "Login successful", "token": token})
-}
-
-func submitOrder(c *gin.Context) {
-	var order map[string]interface{}
-	err := c.ShouldBindJSON(&order)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON-message"})
-		return
-	}
-
-	fmt.Printf("Received order data: %+v\n", order)
-
-	c.JSON(http.StatusOK, gin.H{"status": "200", "message": "Order received successfully"})
-}
 func filterProductsHandler(c *gin.Context) {
 	color := c.Query("color")
 	if color == "" {
@@ -1225,4 +871,498 @@ func rateLimiter(limiter *rate.Limiter) gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+func createChat(userID string) string {
+
+	chatID := uuid.New().String()
+
+	chat := Chat{
+
+		ID: chatID,
+
+		ClientID: userID,
+
+		Messages: []Message{},
+
+		Open: true,
+
+		CreatedAt: time.Now(),
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+
+	defer cancel()
+
+	collection := database.Collection("chatrooms")
+
+	_, err := collection.InsertOne(ctx, chat)
+
+	if err != nil {
+
+		log.Println("Error inserting chat into MongoDB:", err)
+
+		return ""
+
+	}
+
+	return chatID
+
+}
+
+func generateChatID() string {
+
+	return uuid.New().String()
+
+}
+
+func handleWebSocket(c *gin.Context) {
+
+	roomID := c.Param("roomID")
+
+	ws, err := upgrader.Upgrade(c.Writer, c.Request, nil)
+
+	if err != nil {
+
+		log.Println("WebSocket upgrade error:", err)
+
+		return
+
+	}
+
+	chatRoom := GetOrCreateChatRoom(roomID)
+
+	chatRoom.Join(ws)
+
+	defer func() {
+
+		chatRoom.Leave(ws)
+
+		ws.Close()
+
+	}()
+
+	chatRoom.HandleMessages(ws)
+
+}
+
+func (room *ChatRoom) HandleMessages(client *websocket.Conn) {
+
+	defer func() {
+
+		room.Leave(client)
+
+		client.Close()
+
+	}()
+
+	for {
+
+		_, message, err := client.ReadMessage()
+
+		if err != nil {
+
+			log.Println("WebSocket read error:", err)
+
+			break
+
+		}
+
+		var msg Message
+
+		if err := json.Unmarshal(message, &msg); err != nil {
+
+			log.Println("Error parsing message:", err)
+
+			continue
+
+		}
+
+		switch msg.Content {
+
+		case "accept":
+
+			updateChatStatus(room.ID, true)
+
+		case "decline":
+
+			updateChatStatus(room.ID, false)
+
+		default:
+
+			room.Broadcast <- message
+
+		}
+
+	}
+
+}
+
+func (room *ChatRoom) AcceptChat(client *websocket.Conn) {
+
+	chatID := "your_chat_id_here"
+
+	err := updateChatStatus(chatID, true)
+
+	if err != nil {
+
+		log.Println("Error updating chat status:", err)
+
+		return
+
+	}
+
+}
+
+func updateChatStatus(chatID string, open bool) error {
+
+	ctx := context.Background()
+
+	collection := database.Collection("chatrooms")
+
+	filter := bson.M{"_id": chatID}
+
+	update := bson.M{"$set": bson.M{"open": open}}
+
+	_, err := collection.UpdateOne(ctx, filter, update)
+
+	if err != nil {
+
+		return err
+
+	}
+
+	return nil
+
+}
+
+func GetOrCreateChatRoom(roomID string) *ChatRoom {
+
+	if room, exists := chatRooms[roomID]; exists {
+
+		return room
+
+	}
+
+	room := &ChatRoom{
+
+		ID: roomID,
+
+		Clients: make(map[*websocket.Conn]bool),
+
+		Register: make(chan *websocket.Conn),
+
+		Broadcast: make(chan []byte),
+	}
+
+	chatRooms[roomID] = room
+
+	go room.Run()
+
+	return room
+
+}
+
+func (room *ChatRoom) Run() {
+
+	for {
+
+		select {
+
+		case client := <-room.Register:
+
+			room.Clients[client] = true
+
+		case message := <-room.Broadcast:
+
+			for client := range room.Clients {
+
+				err := client.WriteMessage(websocket.TextMessage, message)
+
+				if err != nil {
+
+					delete(room.Clients, client)
+
+					client.Close()
+
+				}
+
+			}
+
+		}
+
+	}
+
+}
+
+func (room *ChatRoom) Join(client *websocket.Conn) {
+
+	room.Register <- client
+
+}
+
+func (room *ChatRoom) Leave(client *websocket.Conn) {
+
+	delete(room.Clients, client)
+
+	client.Close()
+
+}
+
+func (room *ChatRoom) SaveChat(chatID string, userID string) error {
+
+	ctx := context.Background()
+
+	_, err := room.Collection.InsertOne(ctx, bson.M{"chatID": chatID, "userID": userID})
+
+	if err != nil {
+
+		return err
+
+	}
+
+	return nil
+
+}
+
+func sendNewChatNotification() error {
+
+	email := gomail.NewMessage()
+
+	email.SetHeader("From", smtpEmail)
+
+	email.SetHeader("To", "ananasovich2002@gmail.com")
+
+	email.SetHeader("Subject", "New Chat Created")
+
+	email.SetBody("text/plain", "A new chat has been created. Please check the admin panel.")
+
+	dialer := gomail.NewDialer(smtpHost, smtpPort, smtpEmail, smtpPassword)
+
+	if err := dialer.DialAndSend(email); err != nil {
+
+		log.Println("Email sending error:", err)
+
+		return err
+
+	}
+
+	log.Println("New chat notification sent successfully")
+
+	return nil
+
+}
+func main() {
+
+	logger := logrus.New()
+
+	r := gin.Default()
+
+	config := cors.Config{
+		AllowOrigins:     []string{"*"},
+		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE"},
+		AllowHeaders:     []string{"Origin", "Content-Type"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}
+
+	config.AllowOrigins = []string{"http://localhost:8080"}
+	r.Use(cors.New(config))
+	logger.SetFormatter(&logrus.JSONFormatter{})
+	logger.SetOutput(os.Stdout)
+
+	chatRoom := chat.NewChatRoom()
+	go chatRoom.Run()
+	http.Handle("/", http.FileServer(http.Dir("./templates")))
+	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
+		chat.ServeWs(chatRoom, w, r)
+	})
+
+	r.Use(gin.LoggerWithConfig(gin.LoggerConfig{
+		Output: logger.Out,
+		Formatter: func(params gin.LogFormatterParams) string {
+			return fmt.Sprintf("{\"timestamp\":\"%s\",\"status\":%d,\"method\":\"%s\",\"path\":\"%s\"}\n",
+				params.TimeStamp.Format(time.RFC3339),
+				params.StatusCode,
+				params.Method,
+				params.Path,
+			)
+		},
+	}))
+
+	r.MaxMultipartMemory = 1024
+	r.Use(rateLimiter(limiter))
+	r.LoadHTMLGlob("templates/*")
+	r.GET("/2", func(c *gin.Context) {
+		c.String(http.StatusOK, "Request processed successfully")
+	})
+
+	r.POST("/logUserAction", logUserActionEndpoint)
+	r.POST("/register", registerUser)
+	r.POST("/login", loginUser)
+	r.GET("/furniture", getFurnitures)
+	r.GET("/filter", filterProductsHandler)
+	r.GET("/getUser", getUserByID)
+	r.POST("/submitOrder", submitOrder)
+	r.PUT("/updateUser", updateUser)
+	r.DELETE("/deleteUser", deleteUser)
+	r.GET("/getAllUsers", getAllUsers)
+	r.GET("/protected-route", AuthMiddleware(), AuthorizedHandler)
+	r.GET("/confirm-user", confirmUser)
+	r.GET("/users", AuthMiddleware("admin"), getUsersHandler)
+	r.GET("/profile", AuthMiddleware("user"), userProfileHandler)
+	r.POST("/update", AuthMiddleware("user"), updateUserHandler)
+	r.GET("/ws/:roomID", handleWebSocket)
+
+	r.Static("/static", "./static/")
+	r.StaticFS("/auth", http.Dir("auth"))
+	r.StaticFile("/", "index.html")
+
+	client, err := mongo.NewClient(options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		logger.WithError(err).Fatal("Error creating MongoDB client")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err = client.Connect(ctx)
+	if err != nil {
+		logger.WithError(err).Fatal("Error connecting to MongoDB")
+		return
+	}
+
+	err = client.Ping(ctx, nil)
+	if err != nil {
+		logger.WithError(err).Fatal("Error pinging MongoDB")
+		return
+	}
+
+	logger.Info("Connected to MongoDB successfully!")
+
+	defer client.Disconnect(ctx)
+
+	database := client.Database(databaseName)
+
+	if err := createUsersCollection(); err != nil {
+		logger.WithError(err).Fatal("Error creating users collection")
+		return
+	}
+
+	if err := addAgeField(); err != nil {
+		logger.WithError(err).Fatal("Error adding age field")
+		return
+	}
+	exampleUser := User{
+		Name:  "John Doe",
+		Email: "john.doe@example.com",
+	}
+
+	usersCollection := database.Collection(collectionName)
+	insertResult, err := usersCollection.InsertOne(ctx, exampleUser)
+	if err != nil {
+		logger.WithError(err).Fatal("Error inserting user")
+		return
+	}
+
+	logger.Info("Inserted user with ID:", insertResult.InsertedID)
+	logger.Info("Server is running on :8080...")
+
+	if err := r.Run(":8080"); err != nil {
+		logger.WithError(err).Fatal("Error starting the server")
+	}
+}
+
+// CRUD
+func createUser(w http.ResponseWriter, r *http.Request) {
+	var newUser User
+	err := json.NewDecoder(r.Body).Decode(&newUser)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	usersCollection := database.Collection(collectionName)
+	insertResult, err := usersCollection.InsertOne(context.Background(), newUser)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(insertResult)
+}
+
+// crud
+func getUserByID(c *gin.Context) {
+	userID := c.Query("id")
+	objID, err := primitive.ObjectIDFromHex(userID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid user ID format"})
+		return
+	}
+
+	var user User
+	usersCollection := database.Collection(collectionName)
+	err = usersCollection.FindOne(context.Background(), bson.M{"_id": objID}).Decode(&user)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
+		return
+	}
+
+	c.JSON(http.StatusOK, user)
+}
+
+func loginUser(c *gin.Context) {
+	var loginRequest struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	if err := c.ShouldBindJSON(&loginRequest); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	usersCollection := client.Database(databaseName).Collection(collectionName)
+	var user User
+	err := usersCollection.FindOne(context.TODO(), bson.M{"email": loginRequest.Email}).Decode(&user)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(loginRequest.Password))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		return
+	}
+
+	isAdmin := (user.Email == "admin@example.com" && user.Password == "adminpassword")
+
+	if isAdmin {
+		user.Roles = []string{"admin"}
+	}
+
+	token, err := GenerateJWTToken(user.ID.Hex(), user.Roles[0])
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error generating JWT token"})
+		return
+	}
+	fmt.Println("Generated Token:", token)
+
+	c.JSON(http.StatusOK, gin.H{"message": "Login successful", "token": token})
+}
+
+func submitOrder(c *gin.Context) {
+	var order map[string]interface{}
+	err := c.ShouldBindJSON(&order)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid JSON-message"})
+		return
+	}
+
+	fmt.Printf("Received order data: %+v\n", order)
+
+	c.JSON(http.StatusOK, gin.H{"status": "200", "message": "Order received successfully"})
 }
